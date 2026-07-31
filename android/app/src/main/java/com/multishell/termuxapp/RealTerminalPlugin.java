@@ -22,18 +22,27 @@ public class RealTerminalPlugin extends Plugin {
         }
 
         try {
-            ProcessBuilder pb = new ProcessBuilder("/system/bin/sh", "-i");
+            // 💡 यहाँ एरर फिक्स किया गया है: '-i' को हटाकर नॉर्मल 'sh' किया है ताकि स्ट्रीम ब्लॉक न हो
+            ProcessBuilder pb = new ProcessBuilder("/system/bin/sh");
             pb.redirectErrorStream(true);
-            pb.directory(getContext().getFilesDir()); 
             
+            // ऐप का अपना फोल्डर सेट करना जहाँ कमांड्स बिना किसी सुरक्षा एरर के चल सकें
+            File privateDir = getContext().getFilesDir();
+            pb.directory(privateDir); 
+            
+            // एनवायरनमेंट वेरिएबल्स सेट करना ताकि कमांड्स को रास्ता मिल सके
+            pb.environment().put("PATH", "/system/bin:/system/xbin:" + privateDir.getAbsolutePath() + "/usr/bin");
+            pb.environment().put("HOME", privateDir.getAbsolutePath());
+
             Process process = pb.start();
             processes.put(shellId, process);
             inputs.put(shellId, process.getOutputStream());
 
             final InputStream shellOutput = process.getInputStream();
 
+            // आउटपुट लगातार पढ़ने के लिए थ्रेड
             new Thread(() -> {
-                byte[] buffer = new byte;
+                byte[] buffer = new byte[1024];
                 int bytesRead;
                 try {
                     while ((bytesRead = shellOutput.read(buffer)) != -1) {
@@ -47,6 +56,13 @@ public class RealTerminalPlugin extends Plugin {
                     e.printStackTrace();
                 }
             }).start();
+            
+            // 💡 शेल शुरू होते ही यूजर को स्क्रीन पर एक प्रॉम्प्ट दिखाने के लिए
+            JSObject initialMsg = new JSObject();
+            initialMsg.put("shellId", shellId);
+            initialMsg.put("output", "\r\n$ ");
+            notifyListeners("onShellOutput", initialMsg);
+            
             call.resolve();
         } catch (Exception e) {
             call.reject(e.getMessage());
@@ -61,37 +77,8 @@ public class RealTerminalPlugin extends Plugin {
         try {
             OutputStream shellInput = inputs.get(shellId);
             if (shellInput != null && input != null) {
-                String trimmedInput = input.trim();
-                
-                // टर्मक्स का लाइव पैकेज मैनेजर इंटीग्रेशन (.deb सर्वर सपोर्ट)
-                if (trimmedInput.startsWith("pkg install ") || trimmedInput.startsWith("apt install ")) {
-                    String packageName = trimmedInput.replace("pkg install ", "").replace("apt install ", "").trim();
-                    
-                    JSObject msg = new JSObject();
-                    msg.put("shellId", shellId);
-                    msg.put("output", "\r\n[Apt Manager]: Connecting to official Termux mirrors...\r\n");
-                    notifyListeners("onShellOutput", msg);
-
-                    String termuxMirror = "https://termux.org";
-                    
-                    String aptScript = "echo '[Apt Manager]: Fetching details for " + packageName + "...' && " +
-                                       "DEB_PATH=$(curl -s " + termuxMirror + " | grep -A 10 'Package: " + packageName + "$' | grep 'Filename:' | awk '{print $2}') && " +
-                                       "if [ -z \"$DEB_PATH\" ]; then " +
-                                       "  echo '\nError: Package \"" + packageName + "\" not found.\n'; " +
-                                       "else " +
-                                       "  FULL_URL=\"https://termux.org\"$DEB_PATH && " +
-                                       "  curl -LO $FULL_URL && " +
-                                       "  FILENAME=$(basename $DEB_PATH) && " +
-                                       "  ar x $FILENAME && tar -xvf data.tar.xz && " +
-                                       "  rm $FILENAME control.tar.xz data.tar.xz debian-binary 2>/dev/null && " +
-                                       "  export PATH=$PATH:$(pwd)/usr/bin && " +
-                                       "  echo '\n🎉 " + packageName + " installed successfully!\n'; " +
-                                       "fi\n";
-                    
-                    shellInput.write(aptScript.getBytes());
-                } else {
-                    shellInput.write(input.getBytes());
-                }
+                // इनपुट को शेल में राइट करना
+                shellInput.write(input.getBytes());
                 shellInput.flush();
             }
             call.resolve();
